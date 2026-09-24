@@ -1,0 +1,11 @@
+server.rs: scroll / drag 走 xdotool（nde 有 xdotool 但没 ydotool）
+
+upstream 的 scroll 和 drag 路径最后 fallback 走 run_ydotool_*，
+在 nde 上 ydotool 没装就 100% 失败。
+
+加一条 xdotool 优先路径：
+  - scroll: mousemove + --wheel
+  - drag: mousemove + mousedown + mousemove + mouseup
+
+只在 should_prefer_xdotool_pointer() 返回 true 时（X11 + xdotool available）
+走这条；其他情况继续 fallback 到 ydotool。
