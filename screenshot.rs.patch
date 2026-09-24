@@ -1,0 +1,14 @@
+--- a/src/screenshot.rs
++++ b/src/screenshot.rs
+@@ -423,3 +423,110 @@
+     .await
+ }
+ 
++/// nde / generic X11 fallback: capture the root window with whichever tool is
++/// installed. Order matches what was empirically available on NewStartOS:
++///   - `import` (ImageMagick) writes PNG directly via -window root
++///   - `xwd` writes an XWD dump; we convert to PNG via ImageMagick `convert`
++///   - `scrot` is a last resort (it shells out to other things; works on most X11)
++async fn capture_with_x11_root_tool() -> Result<RawScreenshotCapture> {
++    ... (full impl, see upstream cul-src/src/screenshot.rs)
++}
