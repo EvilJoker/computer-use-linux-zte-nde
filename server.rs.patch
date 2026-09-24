@@ -1,0 +1,29 @@
+--- a/src/server.rs
++++ b/src/server.rs
+@@ -400,7 +400,28 @@
+         let mut tree_scoped = false;
+         let mut accessibility_tree_truncated = false;
+         let (accessibility_tree, accessibility_tree_raw_count, accessibility_error) =
+-            if diagnostics.readiness.can_build_accessibility_tree {
++            if !accessibility_target_requested {
++                // nde-specific guard: AT-SPI on nde exposes many slow / never-responding
++                // peers (per-toolkit bridges, mixed-snap applications). A full desktop
++                // scan can hang for tens of seconds because the rust AccessibilityConnection
++                // waits on every peer. Force callers to scope to an app or window before we
++                // even attempt the tree snapshot.
++                (
++                    Vec::new(),
++                    0,
++                    Some(
++                        "get_app_state requires an app or window target on nde. Pass \
++                         app_name_or_bundle_identifier (e.g. \"google-chrome\"), \
++                         or pass a window target via window_id / pid / app_id / \
++                         wm_class / title. Scanning the whole desktop tree hangs the \
++                         AT-SPI bus on nde."
++                            .to_string(),
++                    ),
++                )
++            } else if diagnostics.readiness.can_build_accessibility_tree {
+                 let target_pid = window_context.as_ref().and_then(|window| window.pid);
+                 match snapshot_accessibility_tree(
+                     app_filter.as_deref(),
