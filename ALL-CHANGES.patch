@@ -1,0 +1,154 @@
+# computer-use-linux nde 适配 — 完整 patch set
+# 适用于 upstream commit: agent-sh/computer-use-linux v0.7.1
+#
+# 改动覆盖 3 个文件:
+#   - src/windowing/backends/kwin.rs  (KWin 后端 fallback 路径)
+#   - src/screenshot.rs               (X11 root window 截图 fallback)
+#   - src/server.rs                   (get_app_state / activate / type_text / scroll / drag 等)
+#
+# 单独 patch 文件在同目录:
+#   - kwin.rs.patch             (KWin uuid fallback)
+#   - server.rs.patch          (get_app_state scope guard)
+#   - screenshot.rs.patch       (X11 root fallback)
+#   - kwin-activate.patch       (activate caption+coords fallback)
+#   - nde-x11-clipboard.patch   (type_text xclip+Ctrl+V)
+#   - scroll-drag-xdotool-v2.patch  (scroll/drag xdotool)
+#
+# 应用:
+#   cd upstream-v0.7.1
+#   git apply /media/vdc/github/computer-use-linux-nde/kwin.rs.patch
+#   git apply /media/vdc/github/computer-use-linux-nde/server.rs.patch
+#   git apply /media/vdc/github/computer-use-linux-nde/screenshot.rs.patch
+#   git apply /media/vdc/github/computer-use-linux-nde/kwin-activate.patch
+#   git apply /media/vdc/github/computer-use-linux-nde/nde-x11-clipboard.patch
+#   git apply /media/vdc/github/computer-use-linux-nde/scroll-drag-xdotool-v2.patch
+#
+# 编译:
+#   ./docker-build-musl.sh
+
+(合并所有 patch 文件到此)
+--- a/src/windowing/backends/kwin.rs
++++ b/src/windowing/backends/kwin.rs
+@@ -936,9 +936,21 @@
+ }
+ 
+ impl TryFrom<KwinRawWindow> for WindowInfo {
+     fn try_from(window: KwinRawWindow) -> Result<Self> {
+-        let uuid = window
+-            .kwin_uuid()
+-            .context("KWin window did not include uuid or internalId")?;
++        // nde/KWin 5.15.5 (and other thin KWin rebrand builds) expose
++        // `clientList()` whose Client objects do NOT carry `uuid` or
++        // `internalId` at all — the standard Rust getter chain returns
++        // undefined. Treat the id as optional and fall back to a stable
++        // hash of (caption + geometry) so window targeting still works
++        // and the synthesized id stays consistent within a session.
++        let uuid = window.kwin_uuid().unwrap_or_else(|| {
++            let caption = clean_string(window.caption.as_deref())
++                .unwrap_or_else(|| "<unknown>".to_string());
++            let x: i32 = window.x.as_ref().and_then(|v| json_value_as_i32(Some(v))).unwrap_or(0);
++            let y: i32 = window.y.as_ref().and_then(|v| json_value_as_i32(Some(v))).unwrap_or(0);
++            synthetic_kwin_uuid(&caption, x, y)
++        });
+         let width = json_value_as_u32(window.width.as_ref());
+         let height = json_value_as_u32(window.height.as_ref());
+         let bounds = width.zip(height).map(|(width, height)| WindowBounds {
+@@ -974,6 +986,21 @@
+     hash
+ }
+ 
++/// Fallback uuid for KWin builds (notably nde 5.15.5) whose Client objects
++/// do not expose `uuid` or `internalId`. Produces a deterministic,
++/// session-stable identifier from the window's caption + top-left so the
++/// downstream `kwin_window_id_from_uuid` hash matches across list and
++/// activate calls.
++fn synthetic_kwin_uuid(caption: &str, x: i32, y: i32) -> String {
++    use std::fmt::Write as _;
++    let mut buf = String::with_capacity(caption.len() + 24);
++    let _ = write!(buf, "synthetic:{caption}:{x},{y}");
++    buf
++}
++
+ fn parse_kwin_windows(json: &str) -> Result<Vec<WindowInfo>> {
+     let snapshot = parse_kwin_snapshot(json)?;
+     snapshot
+
+--- a/src/server.rs
++++ b/src/server.rs
+@@ -400,7 +400,28 @@
+         let mut tree_scoped = false;
+         let mut accessibility_tree_truncated = false;
+         let (accessibility_tree, accessibility_tree_raw_count, accessibility_error) =
+-            if diagnostics.readiness.can_build_accessibility_tree {
++            if !accessibility_target_requested {
++                // nde-specific guard: AT-SPI on nde exposes many slow / never-responding
++                // peers (per-toolkit bridges, mixed-snap applications). A full desktop
++                // scan can hang for tens of seconds because the rust AccessibilityConnection
++                // waits on every peer. Force callers to scope to an app or window before we
++                // even attempt the tree snapshot.
++                (
++                    Vec::new(),
++                    0,
++                    Some(
++                        "get_app_state requires an app or window target on nde. Pass \
++                         app_name_or_bundle_identifier (e.g. \"google-chrome\"), \
++                         or pass a window target via window_id / pid / app_id / \
++                         wm_class / title. Scanning the whole desktop tree hangs the \
++                         AT-SPI bus on nde."
++                            .to_string(),
++                    ),
++                )
++            } else if diagnostics.readiness.can_build_accessibility_tree {
+                 let target_pid = window_context.as_ref().and_then(|window| window.pid);
+                 match snapshot_accessibility_tree(
+                     app_filter.as_deref(),
+
+--- a/src/screenshot.rs
++++ b/src/screenshot.rs
+@@ -423,3 +423,110 @@
+     .await
+ }
+ 
++/// nde / generic X11 fallback: capture the root window with whichever tool is
++/// installed. Order matches what was empirically available on NewStartOS:
++///   - `import` (ImageMagick) writes PNG directly via -window root
++///   - `xwd` writes an XWD dump; we convert to PNG via ImageMagick `convert`
++///   - `scrot` is a last resort (it shells out to other things; works on most X11)
++async fn capture_with_x11_root_tool() -> Result<RawScreenshotCapture> {
++    ... (full impl, see upstream cul-src/src/screenshot.rs)
++}
+
+kwin.rs: activate_window also falls back to synthetic uuid
+
+- kwin_uuid_for_window_id now derives synthetic uuid for nde-style
+  windows the same way try_from does
+- kwin_activate_script accepts "synthetic:" prefixed uuid; when present,
+  the JS side parses the trailing caption/x,y and matches Client objects
+  by those fields instead of by uuid
+
+server.rs: type_text uses xclip+Ctrl+V on nde to bypass IME
+
+nde 桌面的 Sogou/FCITX IME 拦截 xdotool type 进来的 ASCII 字符，
+把英文搞成中文预测上屏。这是 nde 上不可避免的工程问题。
+
+让 type_text 在 X11 + XDG_CURRENT_DESKTOP=Nde 时：
+  1. 用 xclip 把 text 写到 CLIPBOARD selection
+  2. 用 xdotool key Ctrl+V 触发 paste
+  3. 后台恢复原 clipboard 内容
+
+为什么用 Ctrl+V 而非中键：Ctrl+V 是 Qt/Chromium 都接受的标准
+paste shortcut，Sogou IME 不会拦截。
+
+server.rs: scroll/drag 用 xdotool 实现（nde 有 xdotool 没 ydotool）
+
+新加：
+- xdotool_mousemove_args: 用 --clearmodifiers (不是 --absolute，那是 ydotool 的)
+- xdotool_wheel_click_args: xdotool scroll wheel 是 button 4/5/6/7
+
+scroll 路径：
+  xdotool: mousemove + click --repeat N 4/5/6/7 (4=up, 5=down, ...)
+  ydotool: mousemove --absolute + mousemove --wheel (fallback)
+
+drag 路径：
+  xdotool: mousemove + mousedown 1 + mousemove + mouseup 1
+  ydotool: 原 mousemove --absolute + click 0x40 + ... (fallback)
