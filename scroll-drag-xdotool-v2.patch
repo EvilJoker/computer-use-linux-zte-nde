@@ -1,0 +1,13 @@
+server.rs: scroll/drag 用 xdotool 实现（nde 有 xdotool 没 ydotool）
+
+新加：
+- xdotool_mousemove_args: 用 --clearmodifiers (不是 --absolute，那是 ydotool 的)
+- xdotool_wheel_click_args: xdotool scroll wheel 是 button 4/5/6/7
+
+scroll 路径：
+  xdotool: mousemove + click --repeat N 4/5/6/7 (4=up, 5=down, ...)
+  ydotool: mousemove --absolute + mousemove --wheel (fallback)
+
+drag 路径：
+  xdotool: mousemove + mousedown 1 + mousemove + mouseup 1
+  ydotool: 原 mousemove --absolute + click 0x40 + ... (fallback)
