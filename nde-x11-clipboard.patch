@@ -1,0 +1,12 @@
+server.rs: type_text uses xclip+Ctrl+V on nde to bypass IME
+
+nde 桌面的 Sogou/FCITX IME 拦截 xdotool type 进来的 ASCII 字符，
+把英文搞成中文预测上屏。这是 nde 上不可避免的工程问题。
+
+让 type_text 在 X11 + XDG_CURRENT_DESKTOP=Nde 时：
+  1. 用 xclip 把 text 写到 CLIPBOARD selection
+  2. 用 xdotool key Ctrl+V 触发 paste
+  3. 后台恢复原 clipboard 内容
+
+为什么用 Ctrl+V 而非中键：Ctrl+V 是 Qt/Chromium 都接受的标准
+paste shortcut，Sogou IME 不会拦截。
