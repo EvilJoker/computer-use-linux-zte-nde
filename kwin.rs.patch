@@ -1,0 +1,45 @@
+--- a/src/windowing/backends/kwin.rs
++++ b/src/windowing/backends/kwin.rs
+@@ -936,9 +936,21 @@
+ }
+ 
+ impl TryFrom<KwinRawWindow> for WindowInfo {
+     fn try_from(window: KwinRawWindow) -> Result<Self> {
+-        let uuid = window
+-            .kwin_uuid()
+-            .context("KWin window did not include uuid or internalId")?;
++        // nde/KWin 5.15.5 (and other thin KWin rebrand builds) expose
++        // `clientList()` whose Client objects do NOT carry `uuid` or
++        // `internalId` at all — the standard Rust getter chain returns
++        // undefined. Treat the id as optional and fall back to a stable
++        // hash of (caption + geometry) so window targeting still works
++        // and the synthesized id stays consistent within a session.
++        let uuid = window.kwin_uuid().unwrap_or_else(|| {
++            let caption = clean_string(window.caption.as_deref())
++                .unwrap_or_else(|| "<unknown>".to_string());
++            let x: i32 = window.x.as_ref().and_then(|v| json_value_as_i32(Some(v))).unwrap_or(0);
++            let y: i32 = window.y.as_ref().and_then(|v| json_value_as_i32(Some(v))).unwrap_or(0);
++            synthetic_kwin_uuid(&caption, x, y)
++        });
+         let width = json_value_as_u32(window.width.as_ref());
+         let height = json_value_as_u32(window.height.as_ref());
+         let bounds = width.zip(height).map(|(width, height)| WindowBounds {
+@@ -974,6 +986,21 @@
+     hash
+ }
+ 
++/// Fallback uuid for KWin builds (notably nde 5.15.5) whose Client objects
++/// do not expose `uuid` or `internalId`. Produces a deterministic,
++/// session-stable identifier from the window's caption + top-left so the
++/// downstream `kwin_window_id_from_uuid` hash matches across list and
++/// activate calls.
++fn synthetic_kwin_uuid(caption: &str, x: i32, y: i32) -> String {
++    use std::fmt::Write as _;
++    let mut buf = String::with_capacity(caption.len() + 24);
++    let _ = write!(buf, "synthetic:{caption}:{x},{y}");
++    buf
++}
++
+ fn parse_kwin_windows(json: &str) -> Result<Vec<WindowInfo>> {
+     let snapshot = parse_kwin_snapshot(json)?;
+     snapshot
