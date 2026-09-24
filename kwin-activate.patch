@@ -1,0 +1,7 @@
+kwin.rs: activate_window also falls back to synthetic uuid
+
+- kwin_uuid_for_window_id now derives synthetic uuid for nde-style
+  windows the same way try_from does
+- kwin_activate_script accepts "synthetic:" prefixed uuid; when present,
+  the JS side parses the trailing caption/x,y and matches Client objects
+  by those fields instead of by uuid
