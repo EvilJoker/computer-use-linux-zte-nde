@@ -1,0 +1,32 @@
+# WindowTarget + WindowInfo 加 window_id_str (Option<String>)
+
+## 改的文件
+1. src/windowing/types.rs — WindowInfo 加 window_id_str, WindowTarget 加 window_id_str, has_target 加 window_id_str 检查
+2. src/windowing/backends/kwin.rs — WindowInfo 构造填 window_id_str; synthetic_kwin_uuid 加 lowercase
+3. src/windowing/backends/{gnome,hyprland,i3,x11}.rs — WindowInfo 构造填 window_id_str
+4. src/windowing/target.rs — resolve_window_target 优先用 window_id_str 匹配
+5. src/windowing/registry.rs + src/windowing/target.rs (test) — WindowInfo literal 加 window_id_str: None
+6. src/server.rs — 7 个 params struct 加 window_id_str 字段, 7 个 into_target 复制 window_id_str
+
+## 改的根因
+nde KWin 5.15.5 上 clientList 返回的 client 没有 uuid 属性,
+所以 Rust 端用 synthetic uuid (caption+x+y 字符串) 作为唯一 id.
+但 upstream 的 WindowInfo.window_id / WindowTarget.window_id 用 u64,
+而 KWin uuid 哈希出 u64 值经常 > 2^53 (JS safe integer max).
+MCP 协议层 JSON number → f64 精度丢失, 传回 Rust 后值改变,
+kwin_uuid_for_window_id 找不到匹配.
+
+## 修复
+保留老 window_id: Option<u64> (向后兼容),
+新增 window_id_str: Option<String>:
+- list 输出: KWin uuid 已经 lowercase, synthetic uuid 也 lowercase
+- activate/click target: caller 传 window_id_str (synthetic:v2ex - google chrome:0,0)
+  字符串比较, 精度无损
+- 内部匹配: resolve_window_target 优先 str 匹配, 找不到才 fall back 到 u64
+
+## 测试
+- get_app_state(scope=code) 立即返回 1 节点 (cache hit)
+- list_windows 返回所有窗口带 window_id_str 字段 (synthetic:caption:x,y)
+- activate_window(window_id_str=...) 精确匹配 ✅
+- click(window_id_str=...) 精确匹配 ✅
+
