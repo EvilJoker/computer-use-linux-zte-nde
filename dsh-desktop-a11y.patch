@@ -1,0 +1,55 @@
+# DSH Desktop: 给 Electron 加 --force-renderer-accessibility
+
+## 改的文件
+1. /home/.../.pkm/20_Projects/P_20260422_桌面助手/self-dev/dshdesktop
+   (bash 启动脚本)
+   备份: .bak.20260924-1757
+
+2. /home/.../.pkm/20_Projects/P_20260422_桌面助手/dsh-plugin-desktop/lib/bin.js
+   (Electron launcher)
+   备份: .bak.20260924-1757
+
+## 改动 1: dshdesktop 脚本
+在 CDP 环境块后追加:
+```bash
+# AT-SPI 启用 — 让 Electron renderer 进程向 accessibility bus 注册自己
+if [[ "${ELECTRON_FORCE_RENDERER_ACCESSIBILITY:-1}" == "1" ]]; then
+  export ELECTRON_FORCE_RENDERER_ACCESSIBILITY=1
+  echo "[$SCRIPT_NAME] Electron renderer accessibility enabled (--force-renderer-accessibility)"
+else
+  unset ELECTRON_FORCE_RENDERER_ACCESSIBILITY
+  echo "[$SCRIPT_NAME] Electron renderer accessibility disabled"
+fi
+```
+
+## 改动 2: bin.js
+在 ELECTRON_REMOTE_DEBUGGING 块后追加:
+```js
+if (process.env.ELECTRON_FORCE_RENDERER_ACCESSIBILITY === "1") {
+    args.push("--force-renderer-accessibility");
+    process.stderr.write(`${DESKTOP_PACKAGE_NAME}: --force-renderer-accessibility enabled (Electron renderer processes will register with AT-SPI)\n`);
+}
+```
+
+## 启动链
+1. self-dev/dshdesktop  → export ELECTRON_FORCE_RENDERER_ACCESSIBILITY=1
+2. corepack yarn start     → dsh-plugin-desktop/lib/bin.js
+3. bin.js 读 env           → args.push("--force-renderer-accessibility")
+4. spawn(electron, args)   → Electron renderer 带 flag 启动
+5. Electron Chromium 自动向 AT-SPI bus 注册 renderer 进程
+
+## 验证
+重启 DSH Desktop 后:
+- mcp__computer-use__get_app_state(app=electron) 应该返回 DSH Desktop 的 UI 树
+  (tabs, sidebar, buttons 等节点)
+
+## 注意
+- 当前 DSH Desktop (PID 2717493, 启动于 09:45) 是改前启动的,需要重启才生效
+- 重启方式: 用户自己 quit dsh-desktop, 然后 dshdesktop (用新脚本重启)
+- ELECTRON_FORCE_RENDERER_ACCESSIBILITY=0 可临时关闭
+
+## 回滚
+```bash
+sudo cp /home/.../self-dev/dshdesktop.bak.20260924-1757 /home/.../self-dev/dshdesktop
+sudo cp /home/.../dsh-plugin-desktop/lib/bin.js.bak.20260924-1757 /home/.../dsh-plugin-desktop/lib/bin.js
+```
