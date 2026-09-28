@@ -47,6 +47,8 @@ win[1]: caption="zMail 3.0" resourceClass={} has_uuid=false has_internalId=false
 
 而 computer-use 的反序列化代码 (kwin.rs:940-942) hard-require uuid/internalId:
 
+**文件**: `src/windowing/backends/kwin.rs`
+
 ```rust
 let uuid = window
     .kwin_uuid()
