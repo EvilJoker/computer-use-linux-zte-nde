@@ -1,0 +1,41 @@
+# Chrome .desktop entries: 4 个补加 --force-renderer-accessibility
+
+## 改的文件 (4 个) + backup
+1. /home/10312862@zte.intra/Desktop/google-chrome.desktop
+   backup: .bak.20260928-1014
+2. /home/10312862@zte.intra/.config/autostart/google-chrome.desktop
+   backup: .bak.20260928-1014
+3. /home/10312862@zte.intra/.config/nde/nde-quicklaunch/google-chrome.desktop
+   backup: .bak.20260928-1014
+4. /usr/share/nde/data/Desktop/google-chrome.desktop
+   backup: .bak.20260928-1014 (sudo cp)
+
+## 改动
+每个 .desktop 文件的 3 条 Exec= 行都加 --force-renderer-accessibility:
+- Exec=/usr/bin/google-chrome-stable --remote-debugging-port=9222 %U --disable-background-networking
+- Exec=/usr/bin/google-chrome-stable --remote-debugging-port=9222 --disable-background-networking
+- Exec=/usr/bin/google-chrome-stable --remote-debugging-port=9222 --incognito --disable-background-networking
+
+## 不改的
+- /usr/share/applications/google-chrome.desktop — 之前已经改过 ✅
+
+## 备注
+实际上 wrapper (/opt/google/chrome/google-chrome) 已经注入 flag,
+所有调用 /usr/bin/google-chrome-stable (symlink 到 wrapper) 都会带 flag。
+改这些 .desktop 是防御性 — 防止未来某个 entry 绕过 wrapper 直接调用 chrome binary。
+
+## 验证
+5 个 entry 都有 flag count = 3 (3 条 Exec= 行 × 1 个 flag each)
+
+## 回滚
+```bash
+# 用户级 entry
+for f in /home/10312862@zte.intra/Desktop/google-chrome.desktop \
+         /home/10312862@zte.intra/.config/autostart/google-chrome.desktop \
+         /home/10312862@zte.intra/.config/nde/nde-quicklaunch/google-chrome.desktop; do
+    cp "$f.bak.20260928-1014" "$f"
+done
+# nde 系统级 entry
+sudo cp /usr/share/nde/data/Desktop/google-chrome.desktop.bak.20260928-1014 \
+        /usr/share/nde/data/Desktop/google-chrome.desktop
+```
