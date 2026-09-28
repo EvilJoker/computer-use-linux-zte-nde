@@ -1,0 +1,43 @@
+# Chrome wrapper: 注入 --force-renderer-accessibility
+
+## 改的文件
+1. /opt/google/chrome/google-chrome (wrapper bash script)
+   备份: /opt/google/chrome/google-chrome.bak.20260924-1747
+
+2. /usr/share/applications/google-chrome.desktop
+   备份: /usr/share/applications/google-chrome.desktop.bak.20260924-1747
+
+## wrapper diff
+```
+30c30,32
+< exec -a "$0" "$HERE/chrome" "$@"
+---
+> exec -a "$0" "$HERE/chrome" \
+>     --force-renderer-accessibility \
+>     "$@"
+```
+
+## desktop diff
+```
+Exec=/usr/bin/google-chrome-stable %U           → + --force-renderer-accessibility
+Exec=/usr/bin/google-chrome-stable              → + --force-renderer-accessibility
+Exec=/usr/bin/google-chrome-stable --incognito  → + --force-renderer-accessibility
+```
+
+## 验证
+启动 `google-chrome-stable --headless=new --user-data-dir=... --remote-debugging-port=9333 about:blank`
+→ 进程 cmdline: `/opt/google/chrome/chrome --force-renderer-accessibility ...`
+
+## 注意事项
+- 当前在跑的 chrome (PID 5963, 9月27日启动) **没带**新 flag
+  它是 wrapper 修改前启动的。要让它的渲染进程注册到 AT-SPI，必须重启。
+- 重启会断开所有 CDP 客户端连接（chrome-devtools-mcp, chrome-devtools-for-dsh）
+- 建议用户保存好当前 tab 工作后,手动重启 Chrome
+
+## 回滚
+```bash
+sudo cp /opt/google/chrome/google-chrome.bak.20260924-1747 \
+        /opt/google/chrome/google-chrome
+sudo cp /usr/share/applications/google-chrome.desktop.bak.20260924-1747 \
+        /usr/share/applications/google-chrome.desktop
+```
