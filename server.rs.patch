@@ -9,8 +9,8 @@
 +                // nde-specific guard: AT-SPI on nde exposes many slow / never-responding
 +                // peers (per-toolkit bridges, mixed-snap applications). A full desktop
 +                // scan can hang for tens of seconds because the rust AccessibilityConnection
-+                // waits on every peer. Force callers to scope to an app or window before we
-+                // even attempt the tree snapshot.
++                waits on every peer. Force callers to scope to an app or window before we
++                even attempt the tree snapshot.
 +                (
 +                    Vec::new(),
 +                    0,
@@ -25,5 +25,12 @@
 +                )
 +            } else if diagnostics.readiness.can_build_accessibility_tree {
                  let target_pid = window_context.as_ref().and_then(|window| window.pid);
-                 match snapshot_accessibility_tree(
-                     app_filter.as_deref(),
+                 // nde: 先尝试 cache (max_age 5s), stale 但总比 caller 挂好
+                 let cached = self
+@@ -440,13 +461,6 @@
+                 let value: (Vec<AccessibilityNode>, usize, Option<String>) = match cached {
+                     Some(cached_snap) => {
+                         // cache 命中: 优先返回 cache, 同时后台异步刷新
+-                        let snap_for_bg = cached_snap.clone();
+                         let app_for_bg = app_filter;
+                         let pid_for_bg = target_pid;
