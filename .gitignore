@@ -23,6 +23,10 @@ Cargo.lock.bak
 /tmp-screenshots/
 dist/
 
+# Release engine scratch (the versioned release/ subdirs themselves are NOT ignored)
+/release/_staging/
+/release/_target/
+
 # node deps (zod schema check is CI-only, deps installed on demand)
 node_modules/
 /pi/node_modules/

@@ -1,0 +1,76 @@
+name: release-nde
+
+# Release pipeline for the ashton/zte-nde fork.  Mirrors the structure of
+# upstream's release-binary job in ci.yml (lines 192-258) but:
+#   - only builds the static-claude-nde x86_64-unknown-linux-musl variant
+#   - does NOT build cosmic / gnu / aarch64 variants
+#   - does NOT publish to crates.io or npm
+#   - does NOT notify codex-desktop
+#
+# Trigger: push of a tag matching v*.*.*-nde.* to zte-nde branch.
+#
+# Behavior: build, stage into release/<tag>/assets/, upload to GitHub Release.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*-nde.*'
+    branches:
+      - zte-nde
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release-claude-nde:
+    name: release artifact (static-claude-nde x86_64-unknown-linux-musl)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+
+      - name: Install host deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools pkg-config libssl-dev
+
+      - name: Configure musl linker
+        run: |
+          mkdir -p .cargo
+          cat >> .cargo/config.toml <<'EOF'
+          [target.x86_64-unknown-linux-musl]
+          linker = "musl-gcc"
+          EOF
+
+      - name: Build static-musl binary
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: |
+          cargo build --locked --release --target x86_64-unknown-linux-musl
+
+      - name: Stage release assets
+        run: |
+          ASSET="computer-use-linux-static-claude-nde-x86_64-unknown-linux-musl"
+          mkdir -p release
+          cp "target/x86_64-unknown-linux-musl/release/computer-use-linux" "release/${ASSET}"
+          (
+            cd release
+            sha256sum "${ASSET}" > "${ASSET}.sha256"
+          )
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          generate_release_notes: true
+          files: |
+            release/computer-use-linux-static-claude-nde-x86_64-unknown-linux-musl
+            release/computer-use-linux-static-claude-nde-x86_64-unknown-linux-musl.sha256
