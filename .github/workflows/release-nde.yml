@@ -8,6 +8,11 @@ name: release-nde
 #   - does NOT notify codex-desktop
 #
 # Trigger: push of a tag matching v*.*.*-nde.* to zte-nde branch.
+#   - Branch commits DO NOT trigger this workflow (only tag pushes do).
+#   - This matches GitHub's standard release convention and avoids
+#     rebuilding on every commit.
+#   - Tags created on any branch will trigger, but the workflow only
+#     pushes releases for tags matching v*.*.*-nde.* — others are ignored.
 #
 # Behavior: build, stage into release/<tag>/assets/, upload to GitHub Release.
 
@@ -15,8 +20,6 @@ on:
   push:
     tags:
       - 'v*.*.*-nde.*'
-    branches:
-      - zte-nde
 
 permissions:
   contents: write

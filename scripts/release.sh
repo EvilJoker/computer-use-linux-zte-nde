@@ -20,6 +20,14 @@
 # This script NEVER deletes, NEVER force-pushes, NEVER touches master, NEVER
 # touches ~/.dsh, NEVER pushes to origin without --push, NEVER publishes
 # artifacts to a remote without explicit --push.
+#
+# OPERATIONAL RULE (2026-09-30, user explicit): all push operations gated by
+# --push are intended for human-driven runs.  An autonomous agent running this
+# script must NOT pass --push (or --yes) without the user explicitly
+# authorizing that specific run.  The interactive [y/N] prompt is the gate;
+# --yes exists only as a convenience for the user (or for the user
+# authorizing an agent run).  See viking://user/default/memories/preferences/
+# Nde_Fork_Push_Ban.md for the full rule.
 
 set -euo pipefail
 
