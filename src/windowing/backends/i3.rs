@@ -300,6 +300,7 @@ impl I3Node {
 
         Some(WindowInfo {
             window_id,
+            window_id_str: Some(window_id.to_string()),
             title,
             app_id,
             wm_class,

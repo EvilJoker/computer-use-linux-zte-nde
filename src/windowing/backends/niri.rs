@@ -553,6 +553,7 @@ impl NiriWindow {
             client_type: None,
             backend: NIRI_BACKEND.to_string(),
             terminal: None,
+            window_id_str: None,
         }
     }
 }

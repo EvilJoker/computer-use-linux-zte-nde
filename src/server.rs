@@ -83,6 +83,11 @@ pub struct ComputerUseLinux {
     /// Cached physical desktop size from the most recent full-frame capture;
     /// used for off-screen warnings and portal logical-coordinate mapping.
     desktop_size: Arc<Mutex<Option<(u32, u32)>>>,
+    /// nde: last-good AT-SPI snapshot cache. When AT-SPI bus hangs (Nde
+    /// peers like Chrome can deadlock on deep tree reads), we fall back to
+    /// the cached snapshot rather than returning an empty tree — callers can
+    /// keep working on stale data while a background refresh tries again.
+    atspi_snapshot_cache: crate::atspi_tree::SnapshotCache,
 }
 
 fn sanitize_unsigned_integer_formats(value: &mut serde_json::Value) {
@@ -405,25 +410,101 @@ impl ComputerUseLinux {
         let mut tree_scoped = false;
         let mut tree_root_pid = None;
         let mut accessibility_tree_truncated = false;
+        // Nde AT-SPI guard: on the Nde desktop, scanning the entire AT-SPI
+        // tree (no app / window target) hangs the bus because peers respond
+        // unreliably. If NDE_AT_SPI_SCOPE_REQUIRED=1, refuse the unscoped call
+        // here instead of letting it block. Default (env unset): unchanged v0.7.7
+        // behavior — the unscoped scan is allowed and may be slow.
+        let nde_scope_required = std::env::var("NDE_AT_SPI_SCOPE_REQUIRED")
+            .ok()
+            .map(|v| v == "1")
+            .unwrap_or(false);
         let (accessibility_tree, accessibility_tree_raw_count, accessibility_error) =
-            if diagnostics.readiness.can_build_accessibility_tree {
-                let target_pid = window_context.as_ref().and_then(|window| window.pid);
-                match snapshot_accessibility_tree(
-                    app_filter.as_deref(),
-                    target_pid,
-                    max_nodes,
-                    max_depth,
+            if nde_scope_required && !accessibility_target_requested {
+                (
+                    Vec::new(),
+                    0,
+                    Some(
+                        "get_app_state requires an app or window target on Nde. Pass                          app_name_or_bundle_identifier (e.g. \"google-chrome\"),                          or pass a window target via window_id / pid / app_id /                          wm_class / title. Scanning the whole desktop tree hangs the                          AT-SPI bus on Nde. (Set NDE_AT_SPI_SCOPE_REQUIRED=0 to allow                          unscoped scans if you know what you are doing.)"
+                            .to_string(),
+                    ),
                 )
-                .await
+            } else if diagnostics.readiness.can_build_accessibility_tree {
+                let target_pid = window_context.as_ref().and_then(|window| window.pid);
+                // nde: try the cache first (5s window). A cache hit returns
+                // the previous successful snapshot synchronously + kicks off a
+                // background refresh, so the caller never blocks on AT-SPI.
+                if let Some(cached) = self
+                    .atspi_snapshot_cache
+                    .get(app_filter.as_deref(), target_pid, Duration::from_secs(5))
                 {
-                    Ok(snapshot) => {
-                        tree_scoped = snapshot.scoped;
-                        tree_root_pid = snapshot.root_pid;
-                        accessibility_tree_truncated = snapshot.truncated;
-                        let raw_count = snapshot.nodes.len();
-                        (compact_accessibility_tree(snapshot.nodes), raw_count, None)
+                    tree_scoped = cached.scoped;
+                    tree_root_pid = cached.root_pid;
+                    accessibility_tree_truncated = cached.truncated;
+                    let raw_count = cached.nodes.len();
+                    let cached_snapshot = cached;
+                    let bg_app = app_filter;
+                    let bg_pid = target_pid;
+                    tokio::spawn(async move {
+                        let _ = tokio::time::timeout(
+                            Duration::from_secs(3),
+                            crate::atspi_tree::snapshot_accessibility_tree(
+                                bg_app.as_deref(),
+                                bg_pid,
+                                500,
+                                8,
+                            ),
+                        )
+                        .await;
+                    });
+                    (
+                        compact_accessibility_tree(cached_snapshot.nodes),
+                        raw_count,
+                        None,
+                    )
+                } else {
+                    match snapshot_accessibility_tree(
+                        app_filter.as_deref(),
+                        target_pid,
+                        max_nodes,
+                        max_depth,
+                    )
+                    .await
+                    {
+                        Ok(snapshot) => {
+                            tree_scoped = snapshot.scoped;
+                            tree_root_pid = snapshot.root_pid;
+                            accessibility_tree_truncated = snapshot.truncated;
+                            let raw_count = snapshot.nodes.len();
+                            // nde: cache the successful snapshot for the
+                            // next caller to hit. AT-SPI reads of Chrome and
+                            // other flaky peers can hang the bus; caching
+                            // keeps repeat callers off the bus entirely.
+                            self.atspi_snapshot_cache.put(
+                                app_filter.as_deref(),
+                                target_pid,
+                                snapshot.clone(),
+                            );
+                            (compact_accessibility_tree(snapshot.nodes), raw_count, None)
+                        }
+                        Err(error) => {
+                            // nde: failed fresh and no cache. Do NOT leave
+                            // the caller hanging. Return the error but make
+                            // it clear the caller can retry once the bus
+                            // settles (rather than triggering another deep
+                            // tree read).
+                            (
+                                Vec::new(),
+                                0,
+                                Some(format!(
+                                    "{error:#}. Hint: AT-SPI peers (notably Chrome) \
+                                     can deadlock on deep tree reads on Nde. \
+                                     Retry once the bus settles, or scope to a \
+                                     specific app/window to avoid scanning peers."
+                                )),
+                            )
+                        }
                     }
-                    Err(error) => (Vec::new(), 0, Some(format!("{error:#}"))),
                 }
             } else {
                 (
@@ -2275,6 +2356,7 @@ impl ActivateWindowParams {
             app_id: self.app_id,
             wm_class: self.wm_class,
             title: self.title,
+            window_id_str: None,
         }
     }
 }
@@ -2453,6 +2535,7 @@ impl GetAppStateParams {
             app_id: self.app_id.clone(),
             wm_class: self.wm_class.clone(),
             title: self.title.clone(),
+            window_id_str: None,
         }
     }
 
@@ -2528,6 +2611,7 @@ impl ScreenshotParams {
             app_id: self.app_id.clone(),
             wm_class: self.wm_class.clone(),
             title: self.title.clone(),
+            window_id_str: None,
         })
     }
 
@@ -2702,6 +2786,7 @@ impl ClickParams {
             app_id: self.app_id.clone(),
             wm_class: self.wm_class.clone(),
             title: self.window_title.clone(),
+            window_id_str: None,
         })
     }
 
@@ -2824,6 +2909,7 @@ impl ScrollParams {
             app_id: self.app_id.clone(),
             wm_class: self.wm_class.clone(),
             title: self.window_title.clone(),
+            window_id_str: None,
         })
     }
 }
@@ -2894,6 +2980,7 @@ impl PressKeyParams {
             app_id: self.app_id.clone(),
             wm_class: self.wm_class.clone(),
             title: self.title.clone(),
+            window_id_str: None,
         }
     }
 }
@@ -2910,6 +2997,7 @@ impl TypeTextParams {
             app_id: self.app_id.clone(),
             wm_class: self.wm_class.clone(),
             title: self.title.clone(),
+            window_id_str: None,
         }
     }
 }
@@ -6494,6 +6582,7 @@ mod tests {
             client_type: Some("wayland".to_string()),
             backend: GNOME_SHELL_EXTENSION_BACKEND.to_string(),
             terminal: None,
+            window_id_str: None,
         }
     }
 

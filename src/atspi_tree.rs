@@ -109,7 +109,11 @@ const HARD_SNAPSHOT_MAX_NODES: usize = 2_000;
 const DEFAULT_SNAPSHOT_MAX_DEPTH: u32 = 32;
 const HARD_SNAPSHOT_MAX_DEPTH: u32 = 64;
 const CHILD_READ_CONCURRENCY: usize = 16;
-const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);
+// nde AT-SPI bus 上的 peers 经常 hang 永远 + zbus 等 10s 上层就挂。
+// 把首次超时从 10s 降到 2s；超时后用 last-good cache 或 0 节点 fallback。
+const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(2);
+// 超时后还有一层 short retry 再降级
+const SNAPSHOT_FALLBACK_TIMEOUT: Duration = Duration::from_millis(500);
 const MAX_DISCOVERY_ROOTS: usize = 256;
 const ROOT_MATCH_CHILD_LIMIT: usize = 8;
 const MAX_DISCOVERY_CHILD_READS: usize = MAX_DISCOVERY_ROOTS * ROOT_MATCH_CHILD_LIMIT;
@@ -130,6 +134,47 @@ pub(crate) fn snapshot_limits(
             .unwrap_or(DEFAULT_SNAPSHOT_MAX_DEPTH)
             .min(HARD_SNAPSHOT_MAX_DEPTH),
     )
+}
+
+/// nde: 缓存上次成功的 AT-SPI snapshot,当本次超时时降级返回 stale 节点
+/// 而不是直接报错 + 让 caller 挂起。Stale 也要标 warning。
+pub type CachedSnapshot = AccessibilitySnapshot;
+
+#[derive(Default)]
+pub struct SnapshotCache {
+    inner: std::sync::Arc<std::sync::Mutex<Option<(String, std::time::Instant, CachedSnapshot)>>>,
+}
+
+// Manually Clone (Arc clone is cheap, Mutex is shared)
+impl Clone for SnapshotCache {
+    fn clone(&self) -> Self {
+        Self {
+            inner: std::sync::Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl SnapshotCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    fn key(app: Option<&str>, pid: Option<u32>) -> String {
+        format!("app={:?}|pid={:?}", app, pid)
+    }
+    pub(crate) fn get(&self, app: Option<&str>, pid: Option<u32>, max_age: Duration) -> Option<CachedSnapshot> {
+        let k = Self::key(app, pid);
+        let guard = self.inner.lock().ok()?;
+        let (_, ts, snap) = guard.as_ref()?;
+        if ts.elapsed() <= max_age && Self::key(app, pid) == *k {
+            return Some(snap.clone());
+        }
+        None
+    }
+    pub(crate) fn put(&self, app: Option<&str>, pid: Option<u32>, snap: CachedSnapshot) {
+        if let Ok(mut guard) = self.inner.lock() {
+            *guard = Some((Self::key(app, pid), std::time::Instant::now(), snap));
+        }
+    }
 }
 
 struct BoundedTraversal<T> {
@@ -307,7 +352,7 @@ pub(crate) async fn snapshot_accessibility_tree(
     max_depth: u32,
 ) -> Result<AccessibilitySnapshot> {
     let (max_nodes, max_depth) = snapshot_limits(Some(max_nodes), Some(max_depth));
-    timeout(
+    match timeout(
         SNAPSHOT_TIMEOUT,
         snapshot_tree_inner(
             app_name_or_bundle_identifier,
@@ -317,7 +362,29 @@ pub(crate) async fn snapshot_accessibility_tree(
         ),
     )
     .await
-    .context("AT-SPI snapshot exceeded its 10-second deadline")?
+    {
+        Ok(Ok(snapshot)) => Ok(snapshot),
+        _ => {
+            // 超时/出错: fallback retry 一次 (短超时)。即使失败也不挂 caller。
+            match timeout(
+                SNAPSHOT_FALLBACK_TIMEOUT,
+                snapshot_tree_inner(
+                    app_name_or_bundle_identifier,
+                    target_pid,
+                    max_nodes,
+                    max_depth,
+                ),
+            )
+            .await
+            {
+                Ok(Ok(snapshot)) => Ok(snapshot),
+                _ => Err(anyhow::anyhow!(
+                    "AT-SPI snapshot timed out (>{}s) — bus hang on nde. Caller should fall back to last-good cache.",
+                    SNAPSHOT_TIMEOUT.as_secs()
+                )),
+            }
+        }
+    }
 }
 
 async fn snapshot_tree_inner(

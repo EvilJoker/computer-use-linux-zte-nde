@@ -267,6 +267,7 @@ pub(crate) fn window_from_properties(
 
     WindowInfo {
         window_id,
+        window_id_str: Some(window_id.to_string()),
         title: get_string(properties, "title"),
         app_id: get_string(properties, "app-id"),
         wm_class: get_string(properties, "wm-class"),

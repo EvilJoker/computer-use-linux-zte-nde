@@ -427,6 +427,7 @@ fn parse_wmctrl_line(line: &str, active_id: Option<u64>) -> Option<WindowInfo> {
 
     Some(WindowInfo {
         window_id,
+        window_id_str: Some(window_id.to_string()),
         title: clean(title),
         app_id,
         wm_class,

@@ -117,6 +117,20 @@ pub fn resolve_window_target<'a>(
     windows: &'a [WindowInfo],
     target: &WindowTarget,
 ) -> Result<&'a WindowInfo> {
+    // nde / JS-precision-safe: try string-id match first if provided
+    if let Some(window_id_str) = target.window_id_str.as_deref() {
+        let matches: Vec<_> = windows
+            .iter()
+            .filter(|window| {
+                window
+                    .window_id_str
+                    .as_deref()
+                    .is_some_and(|s| s == window_id_str)
+            })
+            .collect();
+        return unique_window_match(matches, "window_id_str");
+    }
+
     if let Some(window_id) = target.window_id {
         return resolve_window_id_target(windows, target, window_id);
     }
@@ -408,6 +422,7 @@ mod tests {
     async fn slow_focus_query_cannot_exceed_verification_deadline() {
         let requested_window = WindowInfo {
             window_id: 1,
+            window_id_str: None,
             title: None,
             app_id: None,
             wm_class: None,

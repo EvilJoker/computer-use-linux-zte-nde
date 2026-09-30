@@ -423,6 +423,7 @@ impl TryFrom<HyprlandClient> for WindowInfo {
 
         Ok(WindowInfo {
             window_id,
+            window_id_str: Some(window_id.to_string()),
             title: client.title,
             app_id: client.class_name.clone(),
             wm_class: client.class_name,

@@ -318,6 +318,7 @@ mod tests {
     fn window(backend: &str) -> WindowInfo {
         WindowInfo {
             window_id: 1,
+            window_id_str: None,
             title: Some("Codex".to_string()),
             app_id: Some("codex-desktop".to_string()),
             wm_class: Some("codex-desktop".to_string()),

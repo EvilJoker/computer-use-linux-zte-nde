@@ -70,10 +70,26 @@ pub async fn activate_window(window_id: u64) -> Result<()> {
 async fn kwin_uuid_for_window_id(window_id: u64) -> Result<Option<String>> {
     let json = call_kwin_window_script().await?;
     let snapshot = parse_kwin_snapshot(&json)?;
-    Ok(snapshot.windows.into_iter().find_map(|window| {
-        let uuid = window.kwin_uuid()?;
-        (kwin_window_id_from_uuid(&uuid) == window_id).then_some(uuid)
-    }))
+    Ok(snapshot
+        .windows
+        .into_iter()
+        .find_map(|window| {
+            // Same fallback chain as `try_from` below: prefer real KWin
+            // uuid/internalId; if nde-style builds (or any other thin
+            // KWin rebrand) don't expose them, derive a stable id from
+            // (caption, x, y). This keeps `list_windows` and
+            // `activate_window` consistent — the same window_id maps to
+            // the same string on both sides.
+            let real = window.kwin_uuid();
+            let synthetic = synthetic_kwin_uuid_for_raw(&window);
+            let resolved = real.or(synthetic);
+            if let Some(uuid) = resolved {
+                if kwin_window_id_from_uuid(&uuid) == window_id {
+                    return Some(uuid);
+                }
+            }
+            None
+        }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -648,6 +664,11 @@ fn kwin_activate_script_source(
     let interface = serde_json::to_string(KWIN_CALLBACK_INTERFACE)?;
     let plugin_name_json = serde_json::to_string(plugin_name)?;
     let target_uuid = serde_json::to_string(&target_uuid)?;
+    // If the uuid carries our nde-style "synthetic:caption:x,y" prefix,
+    // tell the JS matcher to fall back to caption/geometry matching. Any
+    // other uuid (real KWin uuid/internalId) is matched verbatim.
+    let synthetic_target = uuid.starts_with("synthetic:");
+    let synthetic_target_js = if synthetic_target { "true" } else { "false" };
 
     Ok(format!(
         r#"(function() {{
@@ -656,6 +677,7 @@ fn kwin_activate_script_source(
     var iface = {interface};
     var pluginName = {plugin_name_json};
     var targetUuid = {target_uuid};
+    var syntheticTarget = {synthetic_target_js};
 
     function send(payload) {{
         payload.backend = "kwin";
@@ -743,9 +765,62 @@ fn kwin_activate_script_source(
     try {{
         var targetWindow = null;
         var windows = listWindows();
+        // nde / KWin 5.15.5 may not expose uuid on Client objects. When
+        // syntheticTarget=true the Rust caller passes a "synthetic:caption:x,y"
+        // string; in that case we replicate the synthetic derivation on the JS
+        // side and match by caption + (x, y) instead of uuid.
+        var targetSynthetic = null;
+        if (syntheticTarget) {{
+            // strip surrounding quotes that serde_json::to_string adds
+            var stripped = targetUuid;
+            if (stripped.charAt(0) === '"' && stripped.charAt(stripped.length - 1) === '"') {{
+                stripped = stripped.substring(1, stripped.length - 1);
+            }}
+            // expected pattern: synthetic:<caption>:<x>,<y>
+            if (stripped.indexOf("synthetic:") === 0) {{
+                var rest = stripped.substring("synthetic:".length);
+                var lastColon = rest.lastIndexOf(":");
+                if (lastColon > 0) {{
+                    var coordPart = rest.substring(lastColon + 1);
+                    var comma = coordPart.lastIndexOf(",");
+                    if (comma > 0) {{
+                        targetSynthetic = {{
+                            caption: rest.substring(0, lastColon),
+                            x: parseInt(coordPart.substring(0, comma), 10),
+                            y: parseInt(coordPart.substring(comma + 1), 10)
+                        }};
+                    }}
+                }}
+            }}
+        }}
         for (var i = 0; i < windows.length; i++) {{
-            if (windowUuid(windows[i]) === targetUuid) {{
-                targetWindow = windows[i];
+            var w = windows[i];
+            var matched = false;
+            if (targetSynthetic) {{
+                var rawCaption = read(w, "caption");
+                // Mirror Rust's clean_string().unwrap_or("<unknown>").
+                // KWin clients without a caption return null here, but the
+                // Rust side stored "<unknown>" in the synthetic uuid.
+                var rawCaption = read(w, "caption");
+                var c = (rawCaption === null || rawCaption === undefined || rawCaption === "")
+                    ? "<unknown>"
+                    : rawCaption;
+                // Match by case-insensitive caption since Rust's synthetic uuid
+                // is normalised to lowercase while KWin's raw caption preserves case.
+                c = (typeof c === "string") ? c.toLowerCase() : "";
+                var wx = parseInt(serialize(read(w, "x")) || "0", 10);
+                var wy = parseInt(serialize(read(w, "y")) || "0", 10);
+                if (c === targetSynthetic.caption &&
+                    wx === targetSynthetic.x && wy === targetSynthetic.y) {{
+                    matched = true;
+                }}
+            }} else {{
+                if (windowUuid(w) === targetUuid) {{
+                    matched = true;
+                }}
+            }}
+            if (matched) {{
+                targetWindow = w;
                 break;
             }}
         }}
@@ -937,9 +1012,19 @@ impl TryFrom<KwinRawWindow> for WindowInfo {
     type Error = anyhow::Error;
 
     fn try_from(window: KwinRawWindow) -> Result<Self> {
-        let uuid = window
-            .kwin_uuid()
-            .context("KWin window did not include uuid or internalId")?;
+        // nde/KWin 5.15.5 (and other thin KWin rebrand builds) expose
+        // `clientList()` whose Client objects do NOT carry `uuid` or
+        // `internalId` at all — the standard Rust getter chain returns
+        // undefined. Treat the id as optional and fall back to a stable
+        // hash of (caption + geometry) so window targeting still works
+        // and the synthesized id stays consistent within a session.
+        let uuid = window.kwin_uuid().unwrap_or_else(|| {
+            let caption = clean_string(window.caption.as_deref())
+                .unwrap_or_else(|| "<unknown>".to_string());
+            let x: i32 = window.x.as_ref().and_then(|v| json_value_as_i32(Some(v))).unwrap_or(0);
+            let y: i32 = window.y.as_ref().and_then(|v| json_value_as_i32(Some(v))).unwrap_or(0);
+            synthetic_kwin_uuid(&caption, x, y)
+        });
         let width = json_value_as_u32(window.width.as_ref());
         let height = json_value_as_u32(window.height.as_ref());
         let bounds = width.zip(height).map(|(width, height)| WindowBounds {
@@ -957,6 +1042,9 @@ impl TryFrom<KwinRawWindow> for WindowInfo {
 
         Ok(WindowInfo {
             window_id: kwin_window_id_from_uuid(&uuid),
+            // String form for callers that want to round-trip without
+            // JS number precision loss (nde KWin hash can exceed 2^53).
+            window_id_str: Some(uuid.clone()),
             title: clean_string(window.caption.as_deref()),
             app_id,
             wm_class,
@@ -980,6 +1068,38 @@ fn kwin_window_id_from_uuid(uuid: &str) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
+}
+
+/// Fallback uuid for KWin builds (notably nde 5.15.5) whose Client objects
+/// do not expose `uuid` or `internalId`. Produces a deterministic,
+/// session-stable identifier from the window's caption + top-left so the
+/// downstream `kwin_window_id_from_uuid` hash matches across list and
+/// activate calls.
+fn synthetic_kwin_uuid(caption: &str, x: i32, y: i32) -> String {
+    use std::fmt::Write as _;
+    let mut buf = String::with_capacity(caption.len() + 24);
+    // Mirror KWin's normalize_kwin_uuid: lowercase + trim so synthetic
+    // and real uuids match by string equality (JS activate match does
+    // exact string equality, not case-insensitive).
+    let _ = write!(
+        buf,
+        "synthetic:{}:{},{}",
+        caption.trim().to_ascii_lowercase(),
+        x,
+        y
+    );
+    buf
+}
+
+/// Same as `synthetic_kwin_uuid` but takes the raw JSON window. Kept here
+/// (next to its sibling) so the algorithm is only defined once — used by
+/// `kwin_uuid_for_window_id` to keep activate consistent with list.
+fn synthetic_kwin_uuid_for_raw(window: &KwinRawWindow) -> Option<String> {
+    let caption = clean_string(window.caption.as_deref())
+        .unwrap_or_else(|| "<unknown>".to_string());
+    let x: i32 = window.x.as_ref().and_then(|v| json_value_as_i32(Some(v))).unwrap_or(0);
+    let y: i32 = window.y.as_ref().and_then(|v| json_value_as_i32(Some(v))).unwrap_or(0);
+    Some(synthetic_kwin_uuid(&caption, x, y))
 }
 
 fn normalize_kwin_uuid(uuid: &str) -> Option<String> {
