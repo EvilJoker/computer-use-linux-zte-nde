@@ -23,9 +23,17 @@ Cargo.lock.bak
 /tmp-screenshots/
 dist/
 
-# Release engine scratch (the versioned release/ subdirs themselves are NOT ignored)
+# Release engine output.  Both scratch (_staging/_target) and versioned
+# release subdirs (v0.7.7-nde.1/, v0.7.7-nde.2/, ...) are intentionally NOT
+# tracked: the binaries live on GitHub Releases, the changelog lives in
+# CHANGELOG.md, and the manifest.json lives next to the GitHub Release.
 /release/_staging/
 /release/_target/
+/release/v*.*.*-nde.*/
+
+# Session handoff and build logs.  These are working state, not source.
+/TASK.md
+/BUILDS/
 
 # node deps (zod schema check is CI-only, deps installed on demand)
 node_modules/
