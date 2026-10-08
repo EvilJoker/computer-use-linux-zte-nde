@@ -1,3 +1,240 @@
+> ⚠️ **This repository is a Nde-desktop fork of [`agent-sh/computer-use-linux`](https://github.com/agent-sh/computer-use-linux).**
+> The content below is the upstream README, kept verbatim for reference.
+> The fork-specific background, environment, and build artifacts are documented in
+> the **Nde fork notes** section that follows the upstream text.
+
+---
+
+## Nde fork notes (this repository)
+
+This is a **Nde-desktop adaptation fork** of `agent-sh/computer-use-linux`, created to
+let DSH Web drive the ZTE **Nde** corporate Linux desktop through the same MCP
+`computer-use` interface. Upstream feature tracking is frozen at v0.7.7; this fork
+only ships additional Nde-environment adaptation patches on top of that base, and
+publishes the result as a static, locally-built binary artifact for DSH Web
+distribution.
+
+### Why this fork exists
+
+The upstream `computer-use-linux` v0.7.7 release assumes a "vanilla" Linux desktop
+(GNOME, recent KWin, Wayland, XDG portals, `ydotool` as uinput fallback). The ZTE
+Nde desktop does not match that assumption:
+
+- Nde is a corporate build of **NewStartOS V4.4.2-ZTE** (CentOS 8 base + ZTE
+  in-house packages), shipping its own shell and window-management stack.
+- The bundled **KWin is 5.15.5** (`kwin-5.15.5-15.4.el8`). Its `clientList()` does
+  not expose the `uuid` / `internalId` / `resourceClass` / `pid` fields that
+  upstream's `kwin.rs` decoder hard-requires, so `list_windows`,
+  `focused_window`, and `activate_window` fail out of the box.
+- Nde runs an **X11 / XRender** session, not Wayland. The Wayland-only portals
+  (`org.freedesktop.portal.RemoteDesktop`, `…ScreenCast`, `…Screenshot`) are not
+  available, and `gnome-screenshot` is not installed.
+- The bundled **Sogou / FCITX IME** intercepts ASCII `xdotool type` input and
+  feeds it to the IME composition buffer, producing garbled output.
+- `ydotool` is not packaged for Nde. The upstream X11 scroll/drag fallbacks,
+  which terminate in `run_ydotool_*`, would 100% fail.
+
+This fork applies **12 Nde-specific patches** (see `REPORT.md` for the full
+root-cause analysis) that replace each broken assumption with an Nde-native
+equivalent. Detailed per-patch reasoning lives in
+[`REPORT.md`](./REPORT.md); the patch series applied on top of upstream
+v0.7.7 is:
+
+| # | Patch file | Purpose |
+| --- | --- | --- |
+| 1 | `kwin.rs.patch` | `list_windows`: synthesize a stable `synthetic:<caption>:<x>,<y>` uuid when nde KWin omits `uuid`/`internalId` |
+| 2 | `kwin-activate.patch` | `activate_window`: caption+x+y match path, JS-side caption=null fallback to `<unknown>` |
+| 3 | `server.rs.patch` | `get_app_state`: require an app or window target on Nde to avoid hanging the whole-tree scan |
+| 4 | `screenshot.rs.patch` | `screenshot`: X11 root-window fallback chain (`import` → `xwd`+`convert` → `scrot`) after GNOME/portal denial |
+| 5 | `nde-x11-clipboard.patch` | `type_text`: Nde X11 path uses `xclip` + `Ctrl+V` to bypass Sogou IME |
+| 6 | `scroll-drag-xdotool-v2.patch` | `scroll` / `drag`: prefer `xdotool` (XTEST wheel buttons 4/5/6/7) over `ydotool` |
+| 7 | `lib.rs.patch`, `window-id-str.patch`, `atspi-tree.patch`, `server.rs`-related runtime tweaks, `chrome-wrapper.patch`, `chrome-desktop-entries.patch`, `dsh-desktop-a11y.patch` | Auxiliary Nde runtime hardening (window-id as string, AT-SPI tree caching, accessibility guard, Chrome wrapper, desktop entries) |
+| — | `ALL-CHANGES.patch` | Combined description of the 12-patch series, for human review only |
+
+The aggregate commit message is recorded in git history; the highest-level
+milestone commit is `15bde96 — Nde 适配: 12 patch + SnapshotCache + scope guard + install script`.
+
+### Target environment
+
+| Item | Value |
+| --- | --- |
+| OS | `NewStartOS V4.4.2-ZTE` (`/etc/os-release` ID=`newstartos`, build ID `20240329`, platform `el8`) |
+| Desktop | **Nde** (ZTE in-house shell, ships its own panel / desktop entries under `/usr/share/nde/`) |
+| Windowing | Real KWin 5.15.5 (`kwin-5.15.5-15.4.el8`) on an **X11 / XRender** session |
+| Display | 3840×1080 dual-screen (`Virtual-1` + `Virtual-2`) |
+| Input stack | `xdotool` (XTEST) for keyboard/click/scroll/drag; `xclip` for clipboard paste |
+| Screenshot stack | `import` (ImageMagick) → `xwd`+`convert` → `scrot` (Nde ships ImageMagick, so the first leg is the stable path) |
+| IME | Sogou / FCITX — must be bypassed by paste, not by raw `xdotool type` |
+| AT-SPI | Already enabled on Nde; `setup_accessibility` is a no-op here |
+| Compositor tools not available | `ydotool`, `wtype`, GNOME Shell, `gnome-screenshot`, `xdg-desktop-portal` (any backend), `mutter` remote-desktop portal |
+
+The compile-time Rust target is `x86_64-unknown-linux-musl`; the Nde host is
+`x86_64` `el8`, so a single `x86_64-unknown-linux-musl` static binary covers
+all Nde hosts with no GLIBC version coupling.
+
+### Artifacts shipped from this fork
+
+This fork publishes **one variant** of one binary, in the upstream
+`<product>-<variant?>-<arch>-<vendor>-<sys>-<abi>` style. We substitute
+upstream's `cosmic` slot with the variant name `static-claude-nde`:
+
+```
+computer-use-linux-static-claude-nde-x86_64-unknown-linux-musl
+```
+
+The `static-claude-nde` variant name marks the binary as
+**musl-static-linked** and **Nde-tuned**. It is intended to be consumed by
+the [DSH Web provider](https://github.com/EvilJoker/dsh-experimental-computer-use-linux-nde-mcp)
+that ships this fork; see that repository for the DSH-side wiring.
+
+| Field | Value |
+| --- | --- |
+| Product | `computer-use-linux` |
+| Variant | `static-claude-nde` (occupies upstream's `cosmic` slot) |
+| Arch | `x86_64` |
+| Vendor | `unknown` (Rust standard placeholder) |
+| Sys | `linux` |
+| ABI | `musl` (static) |
+| Builder | `scripts/release.sh` → `scripts/build-static-musl.sh` inside `dsh-builder:cargo-ready` (Ubuntu 24.04, rustc 1.98) |
+| Verification | `file` (ELF 64-bit x86-64), `ldd` (`statically linked`), `--help` (8 subcommands), `sha256sum -c` |
+
+Release tag naming follows `v<X.Y.Z>-nde.<N>`, where the `X.Y.Z` portion is
+frozen at the upstream base version this fork was patched against (currently
+`0.7.7`) and the `nde.N` suffix is a monotonic patch level for the Nde
+adaptation on top of that base. New tags are produced by
+`scripts/release.sh --tag=vX.Y.Z-nde.N` and are published as GitHub Releases
+on this repository; per-release `manifest.json` and `RELEASE-NOTES.md` are
+written under `release/<tag>/` for inspection but are not the source of truth
+— **always pin a specific release tag and verify its `manifest.json` sha256
+before installing on a DSH host**. The most recent Nde release is always
+linked from this repository's [Releases](../../releases) page.
+
+### Functional status on Nde
+
+Validated against a patched binary on a representative Nde host
+(full table in `REPORT.md` §4). The short version:
+
+- ✅ `doctor`, `list_windows` (18 real windows), `focused_window`,
+  `screenshot` (X11 root path), `click` (with and without `window_id`),
+  `type_text` (Nde xclip+Ctrl+V), `press_key`, `scroll` (xdotool XTEST
+  wheel), `drag` (xdotool XTEST), `activate_window` (KWin backend,
+  `exact_window_focused=true`), `list_apps`
+- ✅ `get_app_state` with explicit `app_name_or_bundle_identifier` /
+  `window_target` (`tree_scoped=true`); no-scope calls return a clear error
+  rather than hanging
+- ⚠️ `perform_action` / `set_value` — needs AT-SPI tree content; Chrome
+  must be launched with `--force-renderer-accessibility` to register a
+  tree, and Qt apps need `qaccessibilityclient` installed
+- n/a `setup_accessibility` (Nde AT-SPI is already on),
+  `setup_window_targeting` (GNOME-specific)
+- ⚠️ `move_window` / `resize_window` — not on the validated path; KWin
+  5.15.5 scripting has known gaps vs. upstream's expectation
+
+### Consuming this binary from DSH Web
+
+**See [`EvilJoker/dsh-experimental-computer-use-linux-nde-mcp`](https://github.com/EvilJoker/dsh-experimental-computer-use-linux-nde-mcp)**
+for the DSH Web provider that downloads, verifies, and wires this binary
+into a DSH Web profile. That repository owns the DSH-side install,
+configuration, and lifecycle story; this repository only owns the
+Nde-adapted binary and its build/release pipeline.
+
+### Consuming this binary from Claude (Code CLI / Desktop)
+
+The patched binary is wire-compatible with the upstream `computer-use-linux`
+MCP server, so a standard Claude setup applies — **only the binary itself is
+swapped**. Follow the upstream "Wire it into your MCP host" section above
+(Claude Code: `claude mcp add`; Claude Desktop: edit
+`~/.config/Claude/claude_desktop_config.json`); wherever upstream writes
+`computer-use-linux` as the command, substitute the absolute path to this
+fork's binary, e.g.:
+
+```bash
+# Pull a tagged Nde build from GitHub (replace vX.Y.Z-nde.N with a real tag)
+gh release download vX.Y.Z-nde.N --repo EvilJoker/computer-use-linux-zte-nde \
+  --pattern 'computer-use-linux-static-claude-nde-x86_64-unknown-linux-musl*'
+chmod +x computer-use-linux-static-claude-nde-x86_64-unknown-linux-musl
+
+# Verify the binary before pointing Claude at it
+sha256sum -c computer-use-linux-static-claude-nde-x86_64-unknown-linux-musl.sha256
+./computer-use-linux-static-claude-nde-x86_64-unknown-linux-musl --help
+./computer-use-linux-static-claude-nde-x86_64-unknown-linux-musl doctor | jq .readiness
+
+# Then register it as a stdio MCP server the standard way, just with this path
+claude mcp add --scope user computer-use-linux -- \
+  "$(pwd)/computer-use-linux-static-claude-nde-x86_64-unknown-linux-musl" mcp
+```
+
+For Claude Desktop, the equivalent config is:
+
+```json
+{
+  "mcpServers": {
+    "computer-use-linux": {
+      "command": "/absolute/path/to/computer-use-linux-static-claude-nde-x86_64-unknown-linux-musl",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+No other fields, no extra env vars, no wrapper script — the same tool list
+that upstream advertises (plus the Nde-adapted behaviour documented in
+`REPORT.md` §4) is what Claude will see. The `--scope local` flag in
+`claude mcp add` is fine for a one-off test profile; `--scope user` is the
+right default for "always want Claude able to drive this Nde desktop".
+Use `claude mcp list` (or restart Claude Desktop and inspect its tool
+panel) to confirm registration.
+
+### Working with this fork locally
+
+```bash
+git clone https://github.com/EvilJoker/computer-use-linux-zte-nde
+cd computer-use-linux-zte-nde
+git checkout zte-nde
+
+# Build a local static-musl binary (musl target + toolchain required)
+scripts/build-static-musl.sh \
+  --asset-base=computer-use-linux-static-claude-nde \
+  --out-dir=./release/_staging \
+  --target-dir=./release/_target
+
+# Wrap the build + tag + manifest into one command
+scripts/release.sh --tag=vX.Y.Z-nde.N   # local tag only; add --push to publish
+```
+
+The release script is **never** auto-pushing and **never** auto-tagging:
+tag creation is gated by `--push` plus an interactive `y/N` confirmation
+(unless `--yes` is also passed), per the operational rule recorded in
+`scripts/release.sh` and `viking://user/default/memories/preferences/Nde_Fork_Push_Ban.md`.
+The compiled `release/_staging/` and `release/_target/` directories are
+git-ignored; only the versioned `release/<tag>/` directory is meant to
+live in a working tree (and even that is meant for inspection, not for
+hosting binaries long-term — GitHub Releases is the source of truth).
+
+### What is **not** in scope for this fork
+
+- **No new upstream features.** This fork deliberately does not track
+  upstream `main` and stays pinned to the same upstream base. Future Nde
+  revisions land as new `v<X.Y.Z>-nde.N` tags on top of the same base, or
+  as a deliberate rebase if upstream moves enough to require rework of
+  the Nde patches.
+- **No COSMIC helper, no aarch64, no GNU build.** Only the single
+  `x86_64-unknown-linux-musl` artifact is produced.
+- **No crates.io / npm publish of the patched code itself.** The fork
+  ships a prebuilt binary for consumption by the
+  [`EvilJoker/dsh-experimental-computer-use-linux-nde-mcp`](https://github.com/EvilJoker/dsh-experimental-computer-use-linux-nde-mcp)
+  DSH Web provider; the patched Rust source is private to this repository.
+- **No DSH Web install / configuration documentation in this README.** See
+  the [DSH Web provider](https://github.com/EvilJoker/dsh-experimental-computer-use-linux-nde-mcp)
+  for how this binary is installed, verified, and wired into a DSH Web
+  profile. This README only covers the fork's source, Nde adaptation, and
+  build/release pipeline.
+- **No doctor-replaces-it work.** `computer-use-linux doctor` is still
+  optimistic on Nde (it checks interface presence, not runtime response);
+  `REPORT.md` §4 is the source of truth for what actually works.
+
+---
+
 <div align="center">
   <h1>computer-use-linux</h1>
   <p><strong>Control a real Linux desktop from any MCP host.</strong></p>
